@@ -308,6 +308,9 @@
       name: "guest",
       account: null,
       balance: START_BALANCE,
+      balanceRevision: 0,
+      balanceBase: START_BALANCE,
+      seenGift: "",
       wagered: 0,
       won: 0,
       rounds: 0,
@@ -341,6 +344,11 @@
         fair: { ...base.fair, ...(saved.fair || {}) },
       };
       merged.balance = Number.isFinite(merged.balance) ? merged.balance : START_BALANCE;
+      merged.balanceRevision = Number.isFinite(Number(merged.balanceRevision))
+        ? Math.max(0, Math.floor(Number(merged.balanceRevision)))
+        : 0;
+      merged.balanceBase = Number.isFinite(Number(merged.balanceBase)) ? Number(merged.balanceBase) : merged.balance;
+      merged.seenGift = typeof merged.seenGift === "string" ? merged.seenGift : "";
       merged.wagered = Number.isFinite(merged.wagered) ? merged.wagered : 0;
       merged.won = Number.isFinite(merged.won) ? merged.won : 0;
       merged.rounds = Number.isFinite(merged.rounds) ? merged.rounds : 0;
@@ -722,10 +730,12 @@
     $("#sideLevel") &&
       ($("#sideLevel").textContent = signedIn
         ? `Level ${lv.level} · ${fmtMoney(state.wagered)} wagered`
-        : "Sign up to chat & rank");
+        : "Log in or sign up to chat & rank");
     $("#sideLevelBar") && ($("#sideLevelBar").style.width = (signedIn ? lv.pct : 0) + "%");
     const sideAuth = $("#sideAuth");
     if (sideAuth) sideAuth.classList.toggle("is-hidden", signedIn);
+    const isAdminAccount = Boolean(signedIn && state.account && state.account.admin);
+    $$(".admin-only").forEach((el) => el.classList.toggle("is-hidden", !isAdminAccount));
     const accountBtn = $("#accountBtn");
     if (accountBtn) accountBtn.title = signedIn ? `@${state.name}` : "Create an account";
 
@@ -1131,15 +1141,27 @@
     return guilds;
   }
 
-  function grantDiscordBonus() {
+  async function grantDiscordBonus() {
     if (state.bonuses.discord) {
       openDiscord();
       return;
+    }
+    // Let any sync that started before verification finish first, so the
+    // claim cannot be replaced by an older server snapshot.
+    if (state.account && !localMode && statsSyncInflight) {
+      try {
+        await statsSyncInflight;
+      } catch (err) {
+        /* the retry below will persist the claim */
+      }
     }
     state.bonuses.discord = Date.now();
     state.balance = round2(state.balance + DISCORD_BONUS);
     updateBalanceUI(true);
     save();
+    // Persist the verified claim before showing success. Without this, a fast
+    // reload can pull the old server balance back over the local bonus.
+    if (state.account && !localMode) await syncStatsNow(true);
     updateUI();
     sound.win(3);
     confetti(160);
@@ -1272,7 +1294,10 @@
         });
         return;
       }
-      grantDiscordBonus();
+      // Make sure the session is restored before crediting so the claim is
+      // written to the account, not just to this browser's local state.
+      if (!authReady) await initSocial();
+      await grantDiscordBonus();
     } catch (err) {
       openDiscordProblem({
         title: "Could not verify",
@@ -1469,7 +1494,7 @@
           <button class="btn btn-outline" type="button" id="revealSeed">Rotate &amp; reveal</button>
           <button class="btn btn-outline" type="button" id="copySeed">Copy server seed</button>
         </div>
-        <p class="fair-note"><b>How it works:</b> every round draws from a deterministic stream seeded by server seed + client seed + nonce. Rotating the server seed reveals the old one so past rounds can be checked. This is a local demo build — seeds live in this browser and the fingerprint is a 128-bit local hash, not a server commitment.</p>
+        <p class="fair-note"><b>How it works:</b> every round draws from a deterministic stream seeded by server seed + client seed + nonce. Rotating the server seed reveals the old one so past rounds can be checked. This is a play-money build — seeds live in this browser and the fingerprint is a 128-bit local hash, not a server commitment.</p>
       `,
       onMount: (body) => {
         const copy = async (text, label) => {
@@ -1553,6 +1578,14 @@
           <div class="account-stat"><span>Rounds</span><b>${state.rounds.toLocaleString("en-US")}</b></div>
         </div>
         ${identity}
+        ${
+          state.account && state.account.admin
+            ? `<div class="account-row">
+                 <div class="account-row-copy"><strong>Admin panel</strong><span>Give cash and post site announcements</span></div>
+                 <button class="btn btn-lime" type="button" data-open="admin" style="height:30px;font-size:9.5px">Open</button>
+               </div>`
+            : ""
+        }
         <div class="account-row">
           <div class="account-row-copy"><strong>Sound effects</strong><span>Small synth clicks and win cues</span></div>
           <button class="toggle ${state.settings.sound ? "is-on" : ""}" type="button" id="toggleSound" aria-label="Toggle sound"></button>
@@ -1632,6 +1665,370 @@
             });
           });
         }
+      },
+    });
+  }
+
+  /* ============================== ANNOUNCEMENTS ============================== */
+
+  const ANNOUNCEMENT_DISMISS_KEY = "wagerx.announcement.dismissed.v1";
+  let announcementPollTimer = 0;
+
+  function renderAnnouncement(announcement, force = false) {
+    const banner = $("#siteAnnouncement");
+    if (!banner) return;
+    const textEl = $("#siteAnnouncementText");
+    if (!announcement || !announcement.id || !announcement.text) {
+      banner.hidden = true;
+      banner.dataset.announcementId = "";
+      return;
+    }
+    let dismissed = "";
+    try {
+      dismissed = localStorage.getItem(ANNOUNCEMENT_DISMISS_KEY) || "";
+    } catch (err) {
+      /* storage can be unavailable in private mode */
+    }
+    if (!force && dismissed === announcement.id) {
+      banner.hidden = true;
+      return;
+    }
+    if (textEl) textEl.textContent = announcement.text;
+    banner.dataset.announcementId = announcement.id;
+    banner.hidden = false;
+  }
+
+  async function loadAnnouncement(force = false) {
+    if (localMode) {
+      renderAnnouncement(null);
+      return;
+    }
+    try {
+      const data = await socialApi("/announcement");
+      renderAnnouncement(data && data.announcement, force);
+    } catch (err) {
+      if (err.status === 404) renderAnnouncement(null);
+    }
+  }
+
+  function dismissAnnouncement() {
+    const banner = $("#siteAnnouncement");
+    if (!banner) return;
+    const id = banner.dataset.announcementId || "";
+    if (id) {
+      try {
+        localStorage.setItem(ANNOUNCEMENT_DISMISS_KEY, id);
+      } catch (err) {
+        /* ignore */
+      }
+    }
+    banner.hidden = true;
+  }
+
+  function startAnnouncementPolling() {
+    if (announcementPollTimer) return;
+    announcementPollTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadAnnouncement();
+    }, 20000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") loadAnnouncement();
+    });
+  }
+
+  /* ============================== ADMIN ============================== */
+
+  function formatAdminTime(timestamp) {
+    const date = new Date(Number(timestamp) || Date.now());
+    return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function adminLogMarkup(entry) {
+    if (!entry) return "";
+    let text = "";
+    if (entry.type === "grant") {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> gave <b>@${esc(entry.targetUsername || "player")}</b> ${fmtMoney(entry.amount)}`;
+      if (entry.note) text += ` · ${esc(entry.note)}`;
+    } else if (entry.type === "announcement") {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> published an announcement`;
+    } else if (entry.type === "announcement-clear") {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> cleared the announcement`;
+    } else {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> updated the floor`;
+    }
+    return `<div class="admin-log-row"><span>${text}</span><span>${esc(formatAdminTime(entry.at))}</span></div>`;
+  }
+
+  function renderAdminAnnouncement(root, announcement) {
+    const target = $("#adminCurrent", root);
+    if (!target) return;
+    if (!announcement) {
+      target.innerHTML = `<div class="admin-current-empty">No announcement is live right now.</div>`;
+      return;
+    }
+    target.innerHTML = `<div class="admin-current-head"><strong>Live announcement</strong><span>${esc(
+      formatAdminTime(announcement.createdAt)
+    )}</span></div><p>${esc(announcement.text)}</p>`;
+  }
+
+  function openAdmin() {
+    if (localMode || !state.account || !state.account.admin) {
+      toast("Admin only", "This panel is locked to the site owner's account.", "error", 5000);
+      return;
+    }
+    openModal({
+      title: "Admin panel",
+      subtitle: `Signed in as @${state.account.username}. Changes are live immediately.`,
+      size: "wide",
+      body: `
+        <div class="admin-tabs" id="adminTabs">
+          <button class="admin-tab is-active" type="button" data-admin-tab="grant">Give cash</button>
+          <button class="admin-tab" type="button" data-admin-tab="announce">Announcement</button>
+        </div>
+
+        <section data-admin-panel="grant">
+          <div class="admin-search">
+            <input class="input-line" id="adminSearch" type="search" maxlength="18" placeholder="Search username…" autocomplete="off" />
+            <button class="btn btn-outline" type="button" id="adminSearchBtn">Search</button>
+          </div>
+          <div class="admin-users" id="adminUsers"><div class="admin-empty">Loading players…</div></div>
+          <div class="admin-grant">
+            <div class="admin-target" id="adminTarget">Pick a player above.</div>
+            <div class="admin-grant-row">
+              <input class="input-line" id="adminAmount" type="number" min="1" max="1000000" step="1" placeholder="Amount, e.g. 5000" />
+              <input class="input-line" id="adminNote" type="text" maxlength="120" placeholder="Note (optional)" />
+            </div>
+            <div class="admin-quick">
+              <button type="button" data-admin-amount="1000">$1,000</button>
+              <button type="button" data-admin-amount="5000">$5,000</button>
+              <button type="button" data-admin-amount="10000">$10,000</button>
+              <button type="button" data-admin-amount="25000">$25,000</button>
+            </div>
+            <button class="btn btn-lime" type="button" id="adminGrantBtn" disabled>Give cash</button>
+          </div>
+        </section>
+
+        <section data-admin-panel="announce" hidden>
+          <textarea class="admin-textarea" id="adminAnnouncement" maxlength="300" rows="4" placeholder="Write a short message for everyone on the floor…"></textarea>
+          <div class="admin-actions">
+            <button class="btn btn-lime" type="button" id="adminPublish">Publish announcement</button>
+            <button class="btn btn-outline" type="button" id="adminClear" disabled>Remove current</button>
+          </div>
+          <div class="admin-current" id="adminCurrent"></div>
+        </section>
+
+        <div class="admin-log" id="adminLog"></div>
+      `,
+      onMount: (body) => {
+        let selectedUser = null;
+        let searchTimer = 0;
+        let busy = false;
+        let announcementLive = false;
+        const searchInput = $("#adminSearch", body);
+        const userList = $("#adminUsers", body);
+        const targetLabel = $("#adminTarget", body);
+        const amountInput = $("#adminAmount", body);
+        const noteInput = $("#adminNote", body);
+        const grantBtn = $("#adminGrantBtn", body);
+        const publishBtn = $("#adminPublish", body);
+        const clearBtn = $("#adminClear", body);
+        const announceInput = $("#adminAnnouncement", body);
+        const logBox = $("#adminLog", body);
+
+        const setTarget = (user) => {
+          selectedUser = user;
+          targetLabel.innerHTML = user
+            ? `Selected: <b>@${esc(user.username)}</b> · ${fmtMoney(user.balance)}`
+            : "Pick a player above.";
+          grantBtn.disabled = !user;
+        };
+
+        const renderUsers = (users) => {
+          if (!users.length) {
+            userList.innerHTML = `<div class="admin-empty">No players found.</div>`;
+            setTarget(null);
+            return;
+          }
+          userList.innerHTML = users
+            .map(
+              (user) => `<button class="admin-user${selectedUser && selectedUser.id === user.id ? " is-selected" : ""}" type="button" data-admin-user="${esc(user.id)}">
+                <span class="admin-avatar" style="background:${safeColor(user.color)}">${esc(String(user.username || "?").slice(0, 2).toUpperCase())}</span>
+                <span class="admin-user-copy"><strong>@${esc(user.username)}${user.admin ? ' <i class="admin-tag">ADMIN</i>' : ""}</strong><span>${fmtMoney(user.balance)} · Lv ${user.level || 1}</span></span>
+                <span class="admin-user-pick">Select</span>
+              </button>`
+            )
+            .join("");
+          userList.querySelectorAll("[data-admin-user]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const picked = users.find((user) => user.id === btn.dataset.adminUser);
+              if (!picked) return;
+              setTarget(picked);
+              userList.querySelectorAll("[data-admin-user]").forEach((other) => {
+                other.classList.toggle("is-selected", other === btn);
+              });
+              amountInput.focus();
+            });
+          });
+        };
+
+        const renderLog = (log) => {
+          const entries = Array.isArray(log) ? log : [];
+          logBox.innerHTML = `<h4>Recent admin actions</h4>${
+            entries.length
+              ? entries.map(adminLogMarkup).join("")
+              : `<div class="admin-log-empty">No admin actions yet.</div>`
+          }`;
+        };
+
+        const load = async (query = "") => {
+          userList.innerHTML = `<div class="admin-empty">Loading players…</div>`;
+          try {
+            const data = await socialApi(`/admin/users?q=${encodeURIComponent(query)}`);
+            renderUsers(Array.isArray(data.users) ? data.users : []);
+            renderLog(data.log);
+            renderAdminAnnouncement(body, data.announcement || null);
+            announcementLive = !!data.announcement;
+            clearBtn.disabled = !announcementLive;
+          } catch (err) {
+            if (err.status === 401) {
+              handleSessionExpired();
+              closeModal(true);
+              return;
+            }
+            const message =
+              err.status === 403
+                ? "This account does not have admin access."
+                : err.status === 404
+                  ? "The admin API is not deployed yet. Deploy the latest server."
+                  : err.message || "Could not load the admin panel.";
+            userList.innerHTML = `<div class="admin-empty">${esc(message)}</div>`;
+            logBox.innerHTML = "";
+          }
+        };
+
+        const setTab = (tab) => {
+          body.querySelectorAll("[data-admin-tab]").forEach((btn) => {
+            btn.classList.toggle("is-active", btn.dataset.adminTab === tab);
+          });
+          body.querySelectorAll("[data-admin-panel]").forEach((panel) => {
+            panel.hidden = panel.dataset.adminPanel !== tab;
+          });
+        };
+
+        body.querySelectorAll("[data-admin-tab]").forEach((btn) => {
+          btn.addEventListener("click", () => setTab(btn.dataset.adminTab));
+        });
+
+        const runSearch = () => {
+          window.clearTimeout(searchTimer);
+          load(searchInput.value.trim());
+        };
+        $("#adminSearchBtn", body).addEventListener("click", runSearch);
+        searchInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            runSearch();
+          }
+        });
+        searchInput.addEventListener("input", () => {
+          window.clearTimeout(searchTimer);
+          searchTimer = window.setTimeout(runSearch, 300);
+        });
+
+        body.querySelectorAll("[data-admin-amount]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            amountInput.value = btn.dataset.adminAmount;
+            amountInput.focus();
+          });
+        });
+
+        grantBtn.addEventListener("click", async () => {
+          if (!selectedUser || busy) return;
+          const amount = Number(amountInput.value);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            toast("Enter an amount", "Use a cash amount greater than zero.", "error");
+            amountInput.focus();
+            return;
+          }
+          busy = true;
+          grantBtn.disabled = true;
+          grantBtn.textContent = "Sending…";
+          try {
+            const data = await socialApi("/admin/grant", {
+              method: "POST",
+              body: { userId: selectedUser.id, amount, note: noteInput.value.trim() },
+            });
+            toast("Cash sent", `${fmtMoney(amount)} went to @${selectedUser.username}.`, "success", 5000);
+            amountInput.value = "";
+            noteInput.value = "";
+            selectedUser = data.user || selectedUser;
+            setTarget(selectedUser);
+            await load(searchInput.value.trim());
+            await refreshMe();
+          } catch (err) {
+            if (err.status === 401) handleSessionExpired();
+            else toast("Could not send cash", err.message || "Try again.", "error", 5000);
+          } finally {
+            busy = false;
+            grantBtn.disabled = !selectedUser;
+            grantBtn.textContent = "Give cash";
+          }
+        });
+
+        publishBtn.addEventListener("click", async () => {
+          if (busy) return;
+          const text = announceInput.value.trim();
+          if (!text) {
+            toast("Write something first", "The announcement cannot be empty.", "error");
+            announceInput.focus();
+            return;
+          }
+          busy = true;
+          publishBtn.disabled = true;
+          publishBtn.textContent = "Publishing…";
+          try {
+            const data = await socialApi("/admin/announcement", { method: "POST", body: { text } });
+            renderAdminAnnouncement(body, data.announcement || null);
+            renderAnnouncement(data.announcement || null, true);
+            announceInput.value = "";
+            announcementLive = !!data.announcement;
+            clearBtn.disabled = !announcementLive;
+            toast("Announcement live", "Everyone will see it on their next refresh.", "success", 5000);
+            await load(searchInput.value.trim());
+          } catch (err) {
+            if (err.status === 401) handleSessionExpired();
+            else toast("Could not publish", err.message || "Try again.", "error", 5000);
+          } finally {
+            busy = false;
+            publishBtn.disabled = false;
+            publishBtn.textContent = "Publish announcement";
+          }
+        });
+
+        clearBtn.addEventListener("click", async () => {
+          if (busy) return;
+          busy = true;
+          clearBtn.disabled = true;
+          clearBtn.textContent = "Removing…";
+          try {
+            await socialApi("/admin/announcement", { method: "DELETE" });
+            renderAdminAnnouncement(body, null);
+            renderAnnouncement(null, true);
+            announcementLive = false;
+            clearBtn.disabled = true;
+            toast("Announcement removed", "The banner is gone for everyone.", "info", 4500);
+            await load(searchInput.value.trim());
+          } catch (err) {
+            if (err.status === 401) handleSessionExpired();
+            else toast("Could not remove", err.message || "Try again.", "error", 5000);
+          } finally {
+            busy = false;
+            clearBtn.disabled = !announcementLive;
+            clearBtn.textContent = "Remove current";
+          }
+        });
+
+        load();
+        return () => window.clearTimeout(searchTimer);
       },
     });
   }
@@ -1880,8 +2277,11 @@
       username: account.username,
       color: account.color || localColor(account.username),
       createdAt: Number(account.createdAt) || Date.now(),
+      admin: false,
     };
     state.name = state.account.username;
+    state.balanceRevision = 0;
+    state.balanceBase = state.balance;
 
     if (loadStats) {
       const safe = (value, fallback) => (Number.isFinite(Number(value)) ? round2(Number(value)) : fallback);
@@ -1940,6 +2340,7 @@
       save({ skipSync: true });
       updateUI();
     }
+    renderAnnouncement(null);
     updateAuthUI();
   }
 
@@ -2036,6 +2437,7 @@
       if (!res.ok) {
         const error = new Error((payload && payload.error) || `Server error (${res.status})`);
         error.status = res.status;
+        error.code = payload && payload.code ? String(payload.code) : "";
         throw error;
       }
       if (payload === null) {
@@ -2056,6 +2458,8 @@
   function statsPayload() {
     return {
       balance: state.balance,
+      balanceRevision: Number(state.balanceRevision) || 0,
+      balanceBase: Number(state.balanceBase) || 0,
       wagered: state.wagered,
       won: state.won,
       rounds: state.rounds,
@@ -2098,8 +2502,23 @@
       return statsSyncInflight;
     }
     statsSyncInflight = socialApi("/me/stats", { method: "PATCH", body: payload })
-      .then(() => {
-        lastStatsSignature = signature;
+      .then((data) => {
+        if (data && data.user) {
+          if (statsSignature() === signature) {
+            applyServerMeta(data.user, { applyBalance: true });
+          } else {
+            // The player acted again while this request was in flight. Keep the
+            // new local state and let the queued sync reconcile it.
+            state.account.admin = !!data.user.admin;
+            noteGift(data.user);
+            save({ skipSync: true });
+            updateUI();
+            lastStatsSignature = signature;
+            scheduleStatsSync(120);
+          }
+        } else {
+          lastStatsSignature = signature;
+        }
         socialOnline = true;
         return true;
       })
@@ -2127,6 +2546,37 @@
     toast("Session expired", "Log in again to chat and rank.", "error", 5000);
   }
 
+  function noteGift(user) {
+    const gift = user && user.lastGift;
+    if (!gift || !gift.id || gift.id === state.seenGift) return;
+    state.seenGift = gift.id;
+    const amount = Number(gift.amount) || 0;
+    const at = Number(gift.at) || 0;
+    if (amount > 0 && (!at || Date.now() - at < 7 * 24 * 60 * 60 * 1000)) {
+      const note = gift.note ? ` · ${gift.note}` : "";
+      window.setTimeout(() => toast("Cash from the house", `+${fmtMoney(amount)}${note}`, "success", 6500), 450);
+    }
+  }
+
+  function applyServerMeta(user, { applyBalance = false } = {}) {
+    if (!user || !user.id) return;
+    if (state.account && state.account.id === String(user.id)) {
+      state.account.admin = !!user.admin;
+    }
+    const revision = Number.isFinite(Number(user.balanceRevision)) ? Number(user.balanceRevision) : 0;
+    const serverBalance = Number.isFinite(Number(user.balance)) ? round2(Number(user.balance)) : state.balance;
+    if (applyBalance) {
+      state.balance = serverBalance;
+      state.balanceBase = serverBalance;
+      state.balanceRevision = revision;
+      updateBalanceUI(true);
+      markStatsSynced();
+    }
+    noteGift(user);
+    save({ skipSync: true });
+    updateUI();
+  }
+
   function applyServerUser(user, { loadStats = true, keepHistory = true } = {}) {
     if (!user || !user.id) return;
     const previousId = state.account ? state.account.id : null;
@@ -2135,8 +2585,11 @@
       username: String(user.username || "player").slice(0, 18),
       color: user.color || "#c8ff3d",
       createdAt: Number(user.createdAt) || Date.now(),
+      admin: !!user.admin,
     };
     state.name = state.account.username;
+    state.balanceRevision = Number.isFinite(Number(user.balanceRevision)) ? Number(user.balanceRevision) : 0;
+    state.balanceBase = Number.isFinite(Number(user.balance)) ? round2(Number(user.balance)) : state.balance;
 
     if (loadStats) {
       const safe = (value, fallback) => (Number.isFinite(Number(value)) ? round2(Number(value)) : fallback);
@@ -2151,6 +2604,7 @@
     }
 
     state.lastLevel = levelInfo().level;
+    noteGift(user);
     save({ skipSync: true });
     markStatsSynced();
     updateUI();
@@ -2163,7 +2617,11 @@
     const submit = $("#chatForm button[type='submit']");
     if (input) {
       input.readOnly = !signedIn || !online;
-      input.placeholder = !online ? "Chat is offline" : signedIn ? "Message #general" : "Sign up to chat";
+      input.placeholder = !online
+        ? "Chat is offline"
+        : signedIn
+          ? "Message #general"
+          : "Log in or sign up to chat";
     }
     if (submit) submit.disabled = !signedIn || !online;
 
@@ -2172,6 +2630,8 @@
     const title = $("#chatPromptTitle");
     const text = $("#chatPromptText");
     const button = $("#chatAuthBtn");
+    const loginButton = $("#chatLoginBtn");
+    if (loginButton) loginButton.classList.toggle("is-hidden", !online || signedIn);
     if (title && text && button) {
       if (!online) {
         title.textContent = "Chat is offline";
@@ -2180,7 +2640,9 @@
         button.dataset.open = "chat-retry";
       } else if (!signedIn) {
         title.textContent = localMode ? "Join the local floor" : "Join the conversation";
-        text.textContent = localMode ? "Accounts are saved in this browser only." : "Create an account to chat and rank.";
+        text.textContent = localMode
+          ? "Log in, or create a local account on this browser."
+          : "Log in to an existing account, or create a new one.";
         button.textContent = "Sign up";
         button.dataset.open = "auth";
       } else {
@@ -2233,11 +2695,53 @@
       updateAuthUI();
       await loadChat(true);
       startChatPolling();
+      startAccountPolling();
       if (state.account) scheduleStatsSync(0);
     })().finally(() => {
       socialInitPromise = null;
     });
     return socialInitPromise;
+  }
+
+  let accountPollTimer = 0;
+  let accountPollBusy = false;
+
+  async function refreshMe() {
+    if (localMode || !state.account || accountPollBusy) return;
+    accountPollBusy = true;
+    try {
+      const data = await socialApi("/me");
+      if (!data || !data.user) {
+        handleSessionExpired();
+        return;
+      }
+      const user = data.user;
+      if (state.account) state.account.admin = !!user.admin;
+      const serverRevision = Number(user.balanceRevision) || 0;
+      const revisionChanged = serverRevision !== (Number(state.balanceRevision) || 0);
+      const dirty = statsSignature() !== lastStatsSignature;
+      if (revisionChanged && !dirty && !gameLocked) {
+        applyServerMeta(user, { applyBalance: true });
+      } else {
+        noteGift(user);
+        save({ skipSync: true });
+        updateUI();
+      }
+    } catch (err) {
+      if (err.status === 401) handleSessionExpired();
+    } finally {
+      accountPollBusy = false;
+    }
+  }
+
+  function startAccountPolling() {
+    if (accountPollTimer) return;
+    accountPollTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshMe();
+    }, 12000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshMe();
+    });
   }
 
   function openAuth(mode = "signup") {
@@ -2247,10 +2751,10 @@
     }
     let tab = mode === "login" ? "login" : "signup";
     openModal({
-      title: "Account access",
+      title: "Log in or create an account",
       subtitle: localMode
-        ? "Sign up or log in on this browser. No email required."
-        : "Sign up or log in to chat and rank. No email required.",
+        ? "Log in to an existing local account, or create a new one."
+        : "Log in to an existing account, or create a new one. No email required.",
       size: "slim",
       body: `
         <div class="auth-tabs">
@@ -2385,8 +2889,19 @@
             const chatInput = $("#chatInput");
             if (chatInput) chatInput.focus();
           } catch (err) {
+            if (err.status === 409 && err.code === "ACCOUNT_EXISTS" && tab === "signup") {
+              setTab("login");
+              showError("That username already has an account. Enter its password to log in.");
+              passInput.focus();
+              return;
+            }
             showError(err && err.message ? err.message : "Could not connect to the social server.");
-            if (err.status === 401 && tab === "login") passInput.focus();
+            if (err.status === 401 && tab === "login") {
+              passInput.focus();
+              if (err.code === "NO_ACCOUNT") {
+                switchEl.innerHTML = `No account yet? <button type="button" data-auth-switch="signup">Create one</button>`;
+              }
+            }
           } finally {
             busy = false;
             submit.disabled = false;
@@ -2611,7 +3126,7 @@
 
     const guest = state.account
       ? ""
-      : `<div class="lb-guest"><span>You are browsing as a guest. Create an account to put your name and stats on the board.</span><button class="btn btn-lime" type="button" data-open="auth">Create account</button></div>`;
+      : `<div class="lb-guest"><span>You are browsing as a guest. Log in or create an account to put your name and stats on the board.</span><div class="lb-guest-actions"><button class="btn btn-ghost" type="button" data-open="auth-login">Log in</button><button class="btn btn-lime" type="button" data-open="auth">Create account</button></div></div>`;
 
     root.innerHTML = `${podium}<div class="lb-table">${head}${rows}</div>${guest}`;
   }
@@ -2624,10 +3139,8 @@
       $("#chatBackdrop")?.classList.add("is-open");
       document.body.classList.add("chat-open");
       closeSidebar();
-    } else if (!state.account) {
-      openAuth("signup");
     } else {
-      $("#chatInput")?.focus();
+      if (state.account) $("#chatInput")?.focus();
       rail.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }
@@ -2700,7 +3213,7 @@
           if (scroll && (reset || atBottom)) scroll.scrollTop = scroll.scrollHeight;
         } else if (scroll && !scroll.querySelector(".msg")) {
           scroll.innerHTML = `<div class="chat-empty" id="chatEmpty">${
-            state.account ? "No messages yet. You're early — say hi." : "No messages yet. Sign up and say hi."
+            state.account ? "No messages yet. You're early — say hi." : "No messages yet. Log in or sign up and say hi."
           }</div>`;
         }
         const online = $("#onlineCount");
@@ -2723,7 +3236,7 @@
         if (scroll && (reset || atBottom)) scroll.scrollTop = scroll.scrollHeight;
       } else if (scroll && !scroll.querySelector(".msg")) {
         scroll.innerHTML = `<div class="chat-empty" id="chatEmpty">${
-          state.account ? "No messages yet. You're early — say hi." : "No messages yet. Sign up and say hi."
+          state.account ? "No messages yet. You're early — say hi." : "No messages yet. Log in or sign up and say hi."
         }</div>`;
       }
       const online = $("#onlineCount");
@@ -2760,7 +3273,7 @@
     input.addEventListener("focus", () => {
       if (!state.account) {
         input.blur();
-        openAuth("signup");
+        openAuth("login");
       } else if (!socialOnline) {
         input.blur();
         toast("Chat offline", "Start the WagerX server and retry.", "error");
@@ -2770,14 +3283,14 @@
     form.addEventListener("click", (e) => {
       if (!state.account) {
         e.preventDefault();
-        openAuth("signup");
+        openAuth("login");
       }
     });
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       if (!state.account) {
-        openAuth("signup");
+        openAuth("login");
         return;
       }
       if (!socialOnline) {
@@ -3124,6 +3637,7 @@
         else if (what === "history") openHistory();
         else if (what === "fairness") openFairness();
         else if (what === "account") openAccount();
+        else if (what === "admin") openAdmin();
         else if (what === "chat-retry") {
           socialOnline = true;
           initSocial();
@@ -3136,6 +3650,10 @@
       }
       if (e.target.closest("#chatClose") || e.target.closest("#chatBackdrop")) {
         closeChatDrawer();
+        return;
+      }
+      if (e.target.closest("#siteAnnouncementClose")) {
+        dismissAnnouncement();
         return;
       }
       if (e.target.closest("[data-home]")) {
@@ -3226,9 +3744,10 @@
       }, 700);
     }
     if (window.location.hash === "#cashier") openCashier();
-    handleDiscordRedirect()
-      .catch(() => {})
-      .finally(() => initSocial());
+    loadAnnouncement();
+    startAnnouncementPolling();
+    initSocial().catch(() => {});
+    handleDiscordRedirect().catch(() => {});
   }
 
   /* ============================== API ============================== */
@@ -3267,6 +3786,8 @@
     openHistory,
     openFairness,
     openAccount,
+    openAdmin,
+    loadAnnouncement,
     openAuth,
     openLeaderboard,
     openChat,

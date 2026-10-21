@@ -18,6 +18,7 @@
     UPSTASH_REDIS_REST_URL=...
     UPSTASH_REDIS_REST_TOKEN=...
     WAGERX_DATA_KEY=wagerx:data
+    WAGERX_ADMIN_USERNAMES=WagerX
 */
 
 const http = require("http");
@@ -44,6 +45,15 @@ const SESSION_COOKIE = "wagerx_sid";
 const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
 const MAX_BODY = 32 * 1024;
 
+// Only these account usernames can open the admin panel or call admin APIs.
+// Set WAGERX_ADMIN_USERNAMES to a comma-separated list in production.
+const ADMIN_USERNAMES = new Set(
+  String(process.env.WAGERX_ADMIN_USERNAMES || "WagerX")
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 const USERNAME_RE = /^[A-Za-z0-9_]{3,18}$/;
 const COLORS = ["#c4b5fd", "#c8ff3d", "#ff9f43", "#3de0ff", "#ff7ba8", "#fbbf24", "#b69bff", "#86efac"];
 const MIME = {
@@ -64,9 +74,10 @@ const MIME = {
 };
 
 class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = "") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -106,6 +117,8 @@ function defaultData() {
     users: {},
     sessions: {},
     messages: [],
+    announcement: null,
+    adminLog: [],
   };
 }
 
@@ -117,6 +130,30 @@ function normalizeData(parsed) {
   parsed.seq = Number.isFinite(parsed.seq)
     ? parsed.seq
     : parsed.messages.reduce((max, message) => Math.max(max, Number(message.seq) || 0), 0);
+  parsed.announcement =
+    parsed.announcement &&
+    typeof parsed.announcement === "object" &&
+    parsed.announcement.id &&
+    typeof parsed.announcement.text === "string" &&
+    parsed.announcement.text.trim()
+      ? {
+          id: String(parsed.announcement.id),
+          text: parsed.announcement.text.trim().slice(0, 300),
+          createdAt: Number(parsed.announcement.createdAt) || now(),
+          author: String(parsed.announcement.author || "WagerX").slice(0, 18),
+        }
+      : null;
+  parsed.adminLog = Array.isArray(parsed.adminLog) ? parsed.adminLog.slice(-200) : [];
+  for (const [id, user] of Object.entries(parsed.users)) {
+    if (!user || typeof user !== "object") {
+      delete parsed.users[id];
+      continue;
+    }
+    user.balanceRevision = Number.isFinite(Number(user.balanceRevision))
+      ? Math.max(0, Math.floor(Number(user.balanceRevision)))
+      : 0;
+    if (user.lastGift && typeof user.lastGift !== "object") delete user.lastGift;
+  }
   return parsed;
 }
 
@@ -153,7 +190,16 @@ async function loadRemoteData() {
   if (!res.ok) throw new Error(`Upstash GET failed (${res.status})`);
   const payload = await res.json();
   if (payload.error) throw new Error(payload.error);
-  if (payload.result == null || payload.result === "") return defaultData();
+  if (payload.result == null || payload.result === "") {
+    // One-time safety net: if this host still has the old file-based data,
+    // import it instead of starting with an empty floor.
+    const legacy = loadFileData();
+    if (Object.keys(legacy.users || {}).length || (legacy.messages || []).length) {
+      console.log("Upstash is empty; importing existing data.json.");
+      return legacy;
+    }
+    return defaultData();
+  }
   const parsed = typeof payload.result === "string" ? JSON.parse(payload.result) : payload.result;
   return normalizeData(parsed);
 }
@@ -236,6 +282,12 @@ if (REMOTE_STORAGE) {
   if (timer.unref) timer.unref();
 }
 
+function isAdmin(user) {
+  return Boolean(
+    user && ADMIN_USERNAMES.has(String(user.usernameLower || user.username || "").trim().toLowerCase())
+  );
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -252,9 +304,48 @@ function publicUser(user) {
   };
 }
 
+function selfUser(user) {
+  return {
+    ...publicUser(user),
+    admin: isAdmin(user),
+    balanceRevision: Number(user.balanceRevision) || 0,
+    lastGift: user.lastGift || null,
+  };
+}
+
+function publicAnnouncement(announcement) {
+  if (!announcement || !announcement.id || !announcement.text) return null;
+  return {
+    id: announcement.id,
+    text: announcement.text,
+    createdAt: announcement.createdAt,
+    author: announcement.author || "WagerX",
+  };
+}
+
+function logAdminAction(admin, type, details = {}) {
+  data.adminLog.push({
+    id: newId("al"),
+    at: now(),
+    type,
+    adminId: admin.id,
+    adminUsername: admin.username,
+    ...details,
+  });
+  if (data.adminLog.length > 200) data.adminLog = data.adminLog.slice(-200);
+}
+
+function requireAdmin(req) {
+  const found = requireUser(req);
+  if (!isAdmin(found.user)) throw new ApiError(403, "Admin access only.");
+  return found;
+}
+
 function findUserByName(username) {
   const lower = String(username || "").trim().toLowerCase();
-  return Object.values(data.users).find((user) => user.usernameLower === lower);
+  return Object.values(data.users).find(
+    (user) => String(user.usernameLower || user.username || "").trim().toLowerCase() === lower
+  );
 }
 
 function parseCookies(req) {
@@ -346,14 +437,25 @@ function validateUsername(username) {
     throw new ApiError(400, "Username must be 3-18 characters: letters, numbers or underscore.");
   }
   if (findUserByName(username)) {
-    throw new ApiError(409, "That username is already on the floor.");
+    throw new ApiError(409, "That username already has an account. Use Log in instead.", "ACCOUNT_EXISTS");
   }
   return username;
 }
 
 function applyStats(user, stats) {
   if (!stats || typeof stats !== "object") return;
-  user.balance = clampNumber(stats.balance, 1e9);
+  const currentRevision = Number(user.balanceRevision) || 0;
+  const incomingRevision = Number.isFinite(Number(stats.balanceRevision)) ? Number(stats.balanceRevision) : 0;
+  const clientBalance = clampNumber(stats.balance, 1e9);
+  if (incomingRevision >= currentRevision) {
+    // The client has seen the latest admin gift (or this is a fresh account).
+    user.balance = clientBalance;
+  } else if (Number.isFinite(Number(stats.balanceBase))) {
+    // A gift landed while this client was playing. Keep the gift and apply only
+    // the player's balance change since their last known server balance.
+    const base = clampNumber(stats.balanceBase, 1e9);
+    user.balance = clampNumber(user.balance + (clientBalance - base), 1e9);
+  }
   user.wagered = clampNumber(stats.wagered, 1e12);
   user.won = clampNumber(stats.won, 1e12);
   user.rounds = Math.floor(clampNumber(stats.rounds, 1e9));
@@ -402,6 +504,7 @@ function leaderboardPlayers(sort) {
 
 const authAttempts = new Map();
 const chatAttempts = new Map();
+const adminAttempts = new Map();
 
 function rateLimit(map, key, max, windowMs) {
   const timestamp = now();
@@ -518,12 +621,13 @@ async function handleApi(req, res, url) {
       rounds: 0,
       bestWin: 0,
       discordClaimed: false,
+      balanceRevision: 0,
     };
     applyStats(user, body.stats);
     data.users[user.id] = user;
     createSession(res, user, req);
     saveData();
-    return sendJson(res, 201, { user: publicUser(user) });
+    return sendJson(res, 201, { user: selfUser(user) });
   }
 
   if (method === "POST" && pathname === "/api/auth/login") {
@@ -534,12 +638,19 @@ async function handleApi(req, res, url) {
     const username = String(body.username || "").trim();
     const password = String(body.password || "");
     const user = findUserByName(username);
-    if (!user || !passwordMatches(password, user)) {
-      throw new ApiError(401, "Wrong username or password.");
+    if (!user) {
+      throw new ApiError(
+        401,
+        "No account found with that username. Use Create account to make one.",
+        "NO_ACCOUNT"
+      );
+    }
+    if (!passwordMatches(password, user)) {
+      throw new ApiError(401, "Wrong password. Try again.", "WRONG_PASSWORD");
     }
     createSession(res, user, req);
     saveData();
-    return sendJson(res, 200, { user: publicUser(user) });
+    return sendJson(res, 200, { user: selfUser(user) });
   }
 
   if (method === "POST" && pathname === "/api/auth/logout") {
@@ -550,7 +661,7 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && pathname === "/api/me") {
     const found = currentSession(req);
-    return sendJson(res, 200, { user: found ? publicUser(found.user) : null });
+    return sendJson(res, 200, { user: found ? selfUser(found.user) : null });
   }
 
   if (method === "PATCH" && pathname === "/api/me") {
@@ -567,7 +678,7 @@ async function handleApi(req, res, url) {
     user.usernameLower = username.toLowerCase();
     user.color = colorFor(username.toLowerCase());
     saveData();
-    return sendJson(res, 200, { user: publicUser(user) });
+    return sendJson(res, 200, { user: selfUser(user) });
   }
 
   if (method === "PATCH" && pathname === "/api/me/stats") {
@@ -575,7 +686,7 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     applyStats(user, body);
     saveData();
-    return sendJson(res, 200, { user: publicUser(user) });
+    return sendJson(res, 200, { user: selfUser(user) });
   }
 
   if (method === "DELETE" && pathname === "/api/me") {
@@ -588,6 +699,100 @@ async function handleApi(req, res, url) {
     clearSession(req, res);
     saveData();
     return sendJson(res, 204, null);
+  }
+
+  if (method === "GET" && pathname === "/api/announcement") {
+    return sendJson(res, 200, { announcement: publicAnnouncement(data.announcement) });
+  }
+
+  if (method === "GET" && pathname === "/api/admin/users") {
+    requireAdmin(req);
+    const query = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const users = Object.values(data.users)
+      .filter((user) => !query || String(user.usernameLower || user.username || "").toLowerCase().includes(query))
+      .sort((a, b) => Number(b.balance) - Number(a.balance) || String(a.username).localeCompare(String(b.username)))
+      .slice(0, 50)
+      .map((user) => ({ ...publicUser(user), admin: isAdmin(user) }));
+    return sendJson(res, 200, {
+      users,
+      total: Object.keys(data.users).length,
+      announcement: publicAnnouncement(data.announcement),
+      log: data.adminLog.slice(-25).reverse(),
+    });
+  }
+
+  if (method === "POST" && pathname === "/api/admin/grant") {
+    const { user: admin } = requireAdmin(req);
+    if (!rateLimit(adminAttempts, admin.id, 60, 60 * 1000)) {
+      throw new ApiError(429, "Slow down. Wait a minute and try again.");
+    }
+    const body = await readJson(req);
+    const targetId = String(body.userId || "").trim();
+    const target = data.users[targetId] || findUserByName(body.username);
+    if (!target) throw new ApiError(404, "That player was not found.");
+    const amount = Math.round(Number(body.amount) * 100) / 100;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new ApiError(400, "Enter a cash amount greater than zero.");
+    }
+    if (amount > 1000000) {
+      throw new ApiError(400, "The maximum single gift is $1,000,000.");
+    }
+    const note = String(body.note || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    target.balance = clampNumber(Number(target.balance) + amount, 1e9);
+    target.balanceRevision = (Number(target.balanceRevision) || 0) + 1;
+    target.lastGift = {
+      id: newId("g"),
+      amount,
+      note,
+      at: now(),
+      from: admin.username,
+    };
+    logAdminAction(admin, "grant", {
+      targetId: target.id,
+      targetUsername: target.username,
+      amount,
+      note,
+    });
+    saveData();
+    return sendJson(res, 200, {
+      user: publicUser(target),
+      amount,
+      note,
+      announcement: publicAnnouncement(data.announcement),
+    });
+  }
+
+  if (method === "POST" && pathname === "/api/admin/announcement") {
+    const { user: admin } = requireAdmin(req);
+    if (!rateLimit(adminAttempts, admin.id, 60, 60 * 1000)) {
+      throw new ApiError(429, "Slow down. Wait a minute and try again.");
+    }
+    const body = await readJson(req);
+    const text = String(body.text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300);
+    if (!text) throw new ApiError(400, "Write an announcement first.");
+    data.announcement = {
+      id: newId("n"),
+      text,
+      createdAt: now(),
+      author: admin.username,
+    };
+    logAdminAction(admin, "announcement", { text });
+    saveData();
+    return sendJson(res, 200, { announcement: publicAnnouncement(data.announcement) });
+  }
+
+  if (method === "DELETE" && pathname === "/api/admin/announcement") {
+    const { user: admin } = requireAdmin(req);
+    data.announcement = null;
+    logAdminAction(admin, "announcement-clear");
+    saveData();
+    return sendJson(res, 200, { announcement: null });
   }
 
   if (method === "GET" && pathname === "/api/chat") {
@@ -704,7 +909,7 @@ const server = http.createServer(async (req, res) => {
     serveStatic(req, res, url);
   } catch (err) {
     if (err instanceof ApiError) {
-      sendJson(res, err.status, { error: err.message });
+      sendJson(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
     } else {
       console.error("Unhandled request error:", err);
       if (!res.headersSent) sendJson(res, 500, { error: "Server error." });
@@ -735,9 +940,20 @@ async function start() {
   saveData();
   if (REMOTE_STORAGE) await flushRemoteSave();
 
+  const missingAdmins = [...ADMIN_USERNAMES].filter(
+    (name) =>
+      !Object.values(data.users).some(
+        (user) => String(user.usernameLower || user.username || "").trim().toLowerCase() === name
+      )
+  );
+  if (missingAdmins.length) {
+    console.warn(`Admin account not registered yet: ${missingAdmins.join(", ")}. Sign up with that exact username.`);
+  }
+
   server.listen(PORT, HOST, () => {
     console.log(`WagerX social server running at http://${HOST}:${PORT}${BASE_PATH}/`);
     console.log(`Data backend: ${REMOTE_STORAGE ? "Upstash Redis" : `file (${DATA_FILE})`}`);
+    console.log(`Admin usernames: ${ADMIN_USERNAMES.size ? [...ADMIN_USERNAMES].join(", ") : "none"}`);
   });
 }
 

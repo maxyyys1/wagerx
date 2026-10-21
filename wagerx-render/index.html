@@ -11,8 +11,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="styles.css?v=20261021d" />
-  <link rel="stylesheet" href="games.css?v=20261021d" />
+  <link rel="stylesheet" href="styles.css?v=20261021g" />
+  <link rel="stylesheet" href="games.css?v=20261021g" />
   <link rel="icon" type="image/png" href="assets/wagerx-icon.png" />
   <link rel="apple-touch-icon" href="assets/wagerx-icon.png" />
 </head>
@@ -46,6 +46,7 @@
           <button type="button" data-open="bonus"><span class="sl-icon">◈</span>Earn cash</button>
           <button type="button" data-open="leaderboard"><span class="sl-icon">♛</span>Leaderboard</button>
           <button type="button" data-open="chat"><span class="sl-icon">#</span>Community</button>
+          <button type="button" class="admin-only is-hidden" data-open="admin"><span class="sl-icon">⚙</span>Admin panel</button>
           <a href="https://discord.gg/xhaaRPVjJu" target="_blank" rel="noopener"><span class="sl-icon">↗</span>Discord</a>
         </div>
       </div>
@@ -108,6 +109,15 @@
           <button class="avatar" type="button" data-open="account" id="accountBtn" aria-label="Account">dj</button>
         </div>
       </header>
+
+      <div class="site-announcement" id="siteAnnouncement" role="status" hidden>
+        <span class="sa-mark" aria-hidden="true">📣</span>
+        <div class="sa-copy">
+          <strong>Announcement</strong>
+          <span id="siteAnnouncementText"></span>
+        </div>
+        <button class="sa-close" id="siteAnnouncementClose" type="button" aria-label="Dismiss announcement">×</button>
+      </div>
 
       <!-- ============================== HOME ============================== -->
       <main class="content" id="top">
@@ -319,12 +329,15 @@
       </div>
 
       <div class="chat-auth-prompt" id="chatAuthPrompt">
-        <div><strong id="chatPromptTitle">Join the conversation</strong><span id="chatPromptText">Create an account to chat and rank.</span></div>
-        <button class="btn btn-lime" type="button" data-open="auth" id="chatAuthBtn">Sign up</button>
+        <div class="chat-auth-copy"><strong id="chatPromptTitle">Join the conversation</strong><span id="chatPromptText">Log in or create an account to chat and rank.</span></div>
+        <div class="chat-auth-actions">
+          <button class="btn btn-ghost" type="button" data-open="auth-login" id="chatLoginBtn">Log in</button>
+          <button class="btn btn-lime" type="button" data-open="auth" id="chatAuthBtn">Sign up</button>
+        </div>
       </div>
 
       <form class="chat-form" id="chatForm">
-        <input id="chatInput" type="text" maxlength="200" placeholder="Sign up to chat" autocomplete="off" aria-label="Message #general" />
+        <input id="chatInput" type="text" maxlength="200" placeholder="Log in or sign up to chat" autocomplete="off" aria-label="Message #general" />
         <button type="submit" aria-label="Send message">
           <svg viewBox="0 0 24 24" fill="none"><path d="m4 12 16-7-5 15-3-6-8-2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
         </button>
@@ -373,7 +386,7 @@
   <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
   <div class="mobile-scrim" id="mobileScrim" aria-hidden="true"></div>
 
-  <script src="core.js?v=20261021d" defer></script>
-  <script src="games.js?v=20261021d" defer></script>
+  <script src="core.js?v=20261021g" defer></script>
+  <script src="games.js?v=20261021g" defer></script>
 </body>
 </html>

@@ -1720,6 +1720,146 @@ input[type="range"]::-moz-range-thumb {
 .account-signed span { display: block; margin-top: 2px; color: var(--dim); font-size: 9px; }
 .account-danger { color: #ff8a96 !important; border-color: rgba(255, 77, 94, 0.25) !important; }
 
+/* admin panel */
+
+.admin-tabs { display: flex; gap: 5px; margin-bottom: 14px; }
+.admin-tab {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0d0d14;
+  color: var(--dim);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.admin-tab.is-active { border-color: rgba(200, 255, 61, 0.4); background: rgba(200, 255, 61, 0.08); color: var(--lime); }
+.admin-search { display: flex; gap: 7px; margin-bottom: 9px; }
+.admin-search .input-line { flex: 1; min-width: 0; }
+.admin-search .btn { height: 38px; padding: 0 14px; font-size: 10.5px; flex: none; }
+.admin-users {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 245px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+  padding-right: 2px;
+}
+.admin-user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d0d14;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.admin-user:hover { border-color: rgba(200, 255, 61, 0.28); background: #11111a; }
+.admin-user.is-selected { border-color: rgba(200, 255, 61, 0.55); background: rgba(200, 255, 61, 0.06); }
+.admin-avatar {
+  width: 29px;
+  height: 29px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #08080b;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+.admin-user-copy { flex: 1; min-width: 0; }
+.admin-user-copy strong { display: block; font-size: 10.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.admin-user-copy span { display: block; margin-top: 1px; color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+.admin-tag {
+  display: inline-block;
+  margin-left: 3px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(200, 255, 61, 0.12);
+  color: var(--lime);
+  font-size: 6.5px;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  vertical-align: 1px;
+}
+.admin-user-pick { flex: none; color: var(--lime); font-size: 7.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.admin-grant { padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: #0b0b12; }
+.admin-target { margin-bottom: 8px; color: var(--dim); font-size: 10px; }
+.admin-target b { color: var(--lime); }
+.admin-grant-row { display: flex; gap: 7px; }
+.admin-grant-row .input-line { flex: 1; min-width: 0; }
+.admin-quick { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.admin-quick button {
+  height: 25px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #11111a;
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 700;
+}
+.admin-quick button:hover { color: var(--lime); border-color: rgba(200, 255, 61, 0.3); }
+.admin-grant > .btn { width: 100%; height: 36px; font-size: 10.5px; }
+.admin-grant > .btn:disabled { background: #1c1c26; color: #5e5e72; cursor: not-allowed; box-shadow: none; }
+.admin-textarea {
+  width: 100%;
+  min-height: 110px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b0b11;
+  color: #fff;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  outline: 0;
+  resize: vertical;
+}
+.admin-textarea:focus { border-color: rgba(200, 255, 61, 0.38); }
+.admin-actions { display: flex; gap: 7px; margin-top: 8px; }
+.admin-actions .btn { height: 36px; padding: 0 12px; font-size: 10px; }
+.admin-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.admin-current {
+  margin-top: 11px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d0d14;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.admin-current-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.admin-current-head strong { color: var(--lime); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
+.admin-current-head span { color: var(--dim); font-size: 8px; }
+.admin-current p { color: #d8d8e3; overflow-wrap: anywhere; }
+.admin-current-empty { color: var(--dim); font-size: 9.5px; }
+.admin-log { margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--line); }
+.admin-log h4 { margin-bottom: 6px; color: var(--dim); font-size: 8px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
+.admin-log-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 9px; line-height: 1.4; }
+.admin-log-row:last-child { border-bottom: 0; }
+.admin-log-row b { color: #cfcfdb; font-weight: 600; }
+.admin-log-row > span:last-child { flex: none; color: #565669; font-size: 8px; }
+.admin-log-empty, .admin-empty { padding: 16px 10px; color: var(--dim); font-size: 9.5px; text-align: center; }
+.admin-log-empty { padding: 8px 0; text-align: left; }
+
+@media (max-width: 560px) {
+  .admin-grant-row { flex-direction: column; }
+  .admin-actions { flex-direction: column; }
+  .admin-actions .btn { width: 100%; }
+}
+
 /* leaderboard */
 
 .lb-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
@@ -1816,6 +1956,7 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 9px;
 }
 .lb-guest span { flex: 1; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.lb-guest-actions { flex: none; display: flex; gap: 6px; }
 .lb-guest .btn { flex: none; height: 30px; padding: 0 10px; font-size: 8.5px; }
 .lb-empty { padding: 34px 12px; color: var(--dim); font-size: 10px; line-height: 1.65; text-align: center; }
 
@@ -1900,6 +2041,7 @@ input[type="range"]::-moz-range-thumb {
   .lb-podium-name { font-size: 9px; }
   .lb-podium-bal { font-size: 9.5px; }
   .lb-guest { flex-direction: column; align-items: stretch; }
+  .lb-guest-actions { flex-direction: column; }
   .lb-guest .btn { width: 100%; }
   .auth-callout { align-items: flex-start; }
 }

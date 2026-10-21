@@ -12,6 +12,15 @@ services:
         value: 0.0.0.0
       - key: BASE_PATH
         value: /
+      # Only this account can open the admin panel.
+      - key: WAGERX_ADMIN_USERNAMES
+        value: WagerX
+      # Set these two values in the Render dashboard. They are intentionally
+      # not stored in this file. Without them, data is temporary.
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
     # Free instances use an ephemeral filesystem. For $0 durable accounts, add
     # UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the Render
     # dashboard (free Upstash Redis). Otherwise data.json can reset when the
