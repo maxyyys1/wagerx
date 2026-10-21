@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: wagerx
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: BASE_PATH
+        value: /
+      # Comma-separated usernames allowed to use the admin panel.
+      # WagerX is the owner account; remove WagerXOfficial if it is not yours.
+      - key: WAGERX_ADMIN_USERNAMES
+        value: WagerX,WagerXOfficial
+      # Set these two values in the Render dashboard. They are intentionally
+      # not stored in this file. Without them, data is temporary.
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+    # Free instances use an ephemeral filesystem. For $0 durable accounts, add
+    # UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the Render
+    # dashboard (free Upstash Redis). Otherwise data.json can reset when the
+    # service restarts, redeploys, or spins down. A paid persistent disk plus
+    # DATA_FILE is the other option.

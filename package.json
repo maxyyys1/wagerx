@@ -1,0 +1,13 @@
+{
+  "name": "wagerx",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WagerX play-money social casino with accounts, chat and leaderboard",
+  "scripts": {
+    "start": "node server.js",
+    "reset-password": "node reset-password.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
