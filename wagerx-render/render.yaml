@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: wagerx
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: BASE_PATH
+        value: /
+    # Free instances use an ephemeral filesystem. For $0 durable accounts, add
+    # UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in the Render
+    # dashboard (free Upstash Redis). Otherwise data.json can reset when the
+    # service restarts, redeploys, or spins down. A paid persistent disk plus
+    # DATA_FILE is the other option.
