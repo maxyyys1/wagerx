@@ -35,7 +35,7 @@ Or double-click `start-wagerx.bat` on Windows. It starts the server and opens th
 | `UPSTASH_REDIS_REST_URL` | — | Optional free persistent storage; set together with the token |
 | `UPSTASH_REDIS_REST_TOKEN` | — | Optional Upstash Redis REST token |
 | `WAGERX_DATA_KEY` | `wagerx:data` | Upstash key used when remote storage is enabled |
-| `WAGERX_ADMIN_USERNAMES` | `WagerX,WagerXOfficial` | Comma-separated usernames allowed to use the admin panel |
+| `WAGERX_ADMIN_USERNAMES` | `WagerX` | Comma-separated usernames allowed to use the admin panel |
 
 Example for a root-hosted deployment:
 
@@ -61,10 +61,11 @@ npm start
 
 Admin access is tied to account usernames on the server, never to a browser-only flag.
 
-1. Set `WAGERX_ADMIN_USERNAMES` to the exact username(s) that should be admin, separated by commas. The default is `WagerX,WagerXOfficial`.
+1. Set `WAGERX_ADMIN_USERNAMES` to the exact username(s) that should be admin, separated by commas. The default is `WagerX`.
 2. Sign in with that account. An **Admin panel** button appears in the sidebar and in **Account settings**.
-3. **Give cash** searches real players, credits their balance, and records the action. The player sees the new balance on their next sync or account refresh.
+3. **Players** searches real players and credits their balance with **Give cash**. The player sees the new balance on their next sync or account refresh.
 4. **Announcement** publishes a site-wide banner. It can be removed at any time.
+5. **Account bans** are handled from the selected player card. Banning an account immediately blocks it from signing in, playing, chatting, and ranking. The account's current network is also blocked silently on the server, but network addresses are never shown in the panel. The **Bans** tab lists banned accounts and lets you unban them. Admin accounts are protected and cannot be banned.
 
 The admin panel requires the Node server. It is hidden in static/Netlify local mode because there is no server to authorize or store changes.
 
@@ -89,7 +90,7 @@ If `/api` responds, server mode is used and the local keys are ignored.
 There is no email recovery. On the machine running the server, reset one account without wiping everyone else:
 
 ```powershell
-npm run reset-password -- WagerXOfficial newpassword123
+npm run reset-password -- WagerX newpassword123
 ```
 
 This rewrites `data.json`, hashes the new password, and signs out that account's existing sessions. To reset everything, stop the server, delete `data.json`, and start it again.
@@ -116,6 +117,8 @@ Local-mode accounts have no recovery flow. Use **Account → Delete account** in
 | `POST` | `/api/admin/grant` | Admin: credit a player (`userId`, `amount`, `note`) |
 | `POST` | `/api/admin/announcement` | Admin: publish an announcement (`text`) |
 | `DELETE` | `/api/admin/announcement` | Admin: remove the announcement |
+| `POST` | `/api/admin/ban` | Admin: ban an account (`userId`, `reason`) |
+| `DELETE` | `/api/admin/ban?userId=` | Admin: unban an account |
 
 ## Discord bonus setup
 
@@ -177,18 +180,22 @@ Deploy the whole `wagerx` folder to a host that runs Node. Do **not** upload onl
 #### Render (quickest, free)
 
 1. Push this folder to a GitHub repository. Do not upload `data.json`; the clean `wagerx-render/` folder already excludes it.
-2. In Render, create a **New Web Service** from that repo.
-3. Render reads `render.yaml`, or use:
-   - Root Directory: `wagerx-render`
+2. Pick **one** layout so Render builds the same files you uploaded:
+   - **Root Directory blank (or `.`):** upload the **contents of this folder** to the repository root.
+   - **Root Directory `wagerx-render`:** upload the **contents of this folder** inside the repository's `wagerx-render/` folder. Do not create `wagerx-render/wagerx-render`.
+   Uploading to the other location leaves Render on the old build.
+3. In Render, create a **New Web Service** from that repo.
+4. Render reads `render.yaml`, or use:
+   - Root Directory: blank (repo root) or `wagerx-render`, matching step 2
    - Build command: `npm install`
    - Start command: `npm start`
-   - Environment: `HOST=0.0.0.0`, `BASE_PATH=/` (root), `NODE_ENV=production`, `WAGERX_ADMIN_USERNAMES=YourExactUsername`
-4. Add the deployed URL to Discord's redirect list.
-5. Free Render web services sleep after 15 minutes of inactivity and use an ephemeral filesystem. Without extra storage, accounts and chat reset whenever the service restarts, redeploys, or spins down.
+   - Environment: `HOST=0.0.0.0`, `BASE_PATH=/` (root), `NODE_ENV=production`, `WAGERX_ADMIN_USERNAMES=WagerX`
+5. Add the deployed URL to Discord's redirect list.
+6. Free Render web services sleep after 15 minutes of inactivity and use an ephemeral filesystem. Without extra storage, accounts and chat reset whenever the service restarts, redeploys, or spins down.
 
 ##### Free durable storage with Upstash (required for real players)
 
-Render's free web service is $0, but its disk is temporary. To keep accounts, chat, announcements, and admin gifts across restarts for $0, use a free Upstash Redis database:
+Render's free web service is $0, but its disk is temporary. To keep accounts, chat, announcements, admin gifts, and account bans across restarts for $0, use a free Upstash Redis database:
 
 1. Create a free Redis database at <https://upstash.com>.
 2. Open the database, find **REST API**, and copy:
@@ -196,12 +203,12 @@ Render's free web service is $0, but its disk is temporary. To keep accounts, ch
    - `UPSTASH_REDIS_REST_TOKEN`
 3. In Render, open your WagerX service → **Environment** → add both variables → save. Render redeploys automatically.
 4. Check the Render logs for `Data backend: Upstash Redis`, or open `/api/health` and look for `"storage":"upstash"`.
-5. Confirm the new files are live: view the page source and look for `?v=20261021g`.
+5. Confirm the new files are live: view the page source and look for `?v=20261021i`.
 
 #### If the live page still shows an older build
 
 - The health check is still `"storage":"file"` until the two Upstash variables are saved. Adding rows in Render is not enough; click **Save Changes** and wait for the service to finish redeploying.
-- The live page still says `?v=20261021d` if Render is building an old commit or a different folder.
+- The live page still says `?v=20261021g` if Render is building an old commit or a different folder.
 - In Render, open **Settings → Root Directory**:
   - If it says `wagerx-render`, the Git repository must contain that folder with these updated files.
   - If it is blank or `.`, upload the **contents of this clean `wagerx-render/` folder** to the repository root (do not create a nested `wagerx-render/wagerx-render` folder).

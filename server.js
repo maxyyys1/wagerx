@@ -18,13 +18,14 @@
     UPSTASH_REDIS_REST_URL=...
     UPSTASH_REDIS_REST_TOKEN=...
     WAGERX_DATA_KEY=wagerx:data
-    WAGERX_ADMIN_USERNAMES=WagerX,WagerXOfficial
+    WAGERX_ADMIN_USERNAMES=WagerX
 */
 
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const net = require("net");
 
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || "127.0.0.1";
@@ -48,7 +49,7 @@ const MAX_BODY = 32 * 1024;
 // Only these account usernames can open the admin panel or call admin APIs.
 // Set WAGERX_ADMIN_USERNAMES to a comma-separated list in production.
 const ADMIN_USERNAMES = new Set(
-  String(process.env.WAGERX_ADMIN_USERNAMES || "WagerX,WagerXOfficial")
+  String(process.env.WAGERX_ADMIN_USERNAMES || "WagerX")
     .split(",")
     .map((name) => name.trim().toLowerCase())
     .filter(Boolean)
@@ -109,6 +110,52 @@ function newId(prefix) {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
+function normalizeIp(value) {
+  let ip = String(value || "").trim();
+  if (!ip) return "";
+  if (ip.startsWith("[")) {
+    const end = ip.indexOf("]");
+    if (end !== -1) ip = ip.slice(1, end);
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(ip)) ip = ip.slice(0, ip.lastIndexOf(":"));
+  if (ip.toLowerCase().startsWith("::ffff:")) {
+    const ipv4 = ip.slice(7);
+    if (net.isIP(ipv4) === 4) ip = ipv4;
+  }
+  return ip;
+}
+
+function normalizeIpBans(value) {
+  const bans = {};
+  const entries = Array.isArray(value)
+    ? value
+    : value && typeof value === "object"
+      ? Object.values(value)
+      : [];
+  for (const raw of entries) {
+    const item = typeof raw === "string" ? { ip: raw } : raw;
+    if (!item || typeof item !== "object") continue;
+    const ip = normalizeIp(item.ip);
+    if (!ip || !net.isIP(ip)) continue;
+    const sourceUserIds = Array.isArray(item.sourceUserIds)
+      ? item.sourceUserIds.map(String).filter(Boolean)
+      : item.sourceUserId
+        ? [String(item.sourceUserId)]
+        : [];
+    bans[ip] = {
+      ip,
+      reason: String(item.reason || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120),
+      createdAt: Number(item.createdAt) || now(),
+      createdBy: String(item.createdBy || "WagerX").slice(0, 18),
+      sourceUserIds,
+    };
+  }
+  return bans;
+}
+
 function defaultData() {
   return {
     version: 1,
@@ -118,6 +165,7 @@ function defaultData() {
     sessions: {},
     messages: [],
     announcement: null,
+    ipBans: {},
     adminLog: [],
   };
 }
@@ -143,6 +191,7 @@ function normalizeData(parsed) {
           author: String(parsed.announcement.author || "WagerX").slice(0, 18),
         }
       : null;
+  parsed.ipBans = normalizeIpBans(parsed.ipBans);
   parsed.adminLog = Array.isArray(parsed.adminLog) ? parsed.adminLog.slice(-200) : [];
   for (const [id, user] of Object.entries(parsed.users)) {
     if (!user || typeof user !== "object") {
@@ -153,6 +202,24 @@ function normalizeData(parsed) {
       ? Math.max(0, Math.floor(Number(user.balanceRevision)))
       : 0;
     if (user.lastGift && typeof user.lastGift !== "object") delete user.lastGift;
+    user.lastIp = normalizeIp(user.lastIp);
+    if (!user.lastIp || !net.isIP(user.lastIp)) delete user.lastIp;
+    user.banned = Boolean(user.banned);
+    if (user.banned) {
+      user.bannedAt = Number(user.bannedAt) || now();
+      user.bannedBy = String(user.bannedBy || "WagerX").slice(0, 18);
+      user.banReason = String(user.banReason || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+      user.banIp = normalizeIp(user.banIp);
+      if (!user.banIp || !net.isIP(user.banIp)) delete user.banIp;
+    } else {
+      delete user.bannedAt;
+      delete user.bannedBy;
+      delete user.banReason;
+      delete user.banIp;
+    }
   }
   return parsed;
 }
@@ -323,6 +390,98 @@ function publicAnnouncement(announcement) {
   };
 }
 
+function adminUserView(user) {
+  return {
+    ...publicUser(user),
+    admin: isAdmin(user),
+    banned: !!user.banned,
+    bannedAt: Number(user.bannedAt) || 0,
+    bannedBy: String(user.bannedBy || ""),
+    banReason: String(user.banReason || ""),
+  };
+}
+
+function publicBannedUsers() {
+  return Object.values(data.users)
+    .filter((user) => user && user.banned)
+    .sort((a, b) => Number(b.bannedAt) - Number(a.bannedAt) || String(a.username).localeCompare(String(b.username)))
+    .map((user) => ({
+      id: user.id,
+      username: user.username,
+      bannedAt: Number(user.bannedAt) || 0,
+      bannedBy: String(user.bannedBy || "WagerX"),
+      banReason: String(user.banReason || ""),
+    }));
+}
+
+function userIpForBan(user) {
+  const lastIp = normalizeIp(user.lastIp);
+  if (lastIp && net.isIP(lastIp)) return lastIp;
+  const sessions = Object.values(data.sessions)
+    .filter((session) => session.userId === user.id)
+    .sort((a, b) => Number(b.lastSeen) - Number(a.lastSeen));
+  for (const session of sessions) {
+    const ip = normalizeIp(session.ip);
+    if (ip && net.isIP(ip)) return ip;
+  }
+  return "";
+}
+
+function addIpBanForAccount(user, ip, admin) {
+  const normalized = normalizeIp(ip);
+  if (!normalized || !net.isIP(normalized)) return false;
+  const existing = data.ipBans[normalized];
+  if (existing) {
+    const sourceUserIds = new Set(Array.isArray(existing.sourceUserIds) ? existing.sourceUserIds : []);
+    sourceUserIds.add(user.id);
+    existing.sourceUserIds = [...sourceUserIds];
+    existing.reason = existing.reason || `Account ban: @${user.username}`;
+    existing.createdAt = Number(existing.createdAt) || now();
+    existing.createdBy = existing.createdBy || admin.username;
+  } else {
+    data.ipBans[normalized] = {
+      ip: normalized,
+      reason: `Account ban: @${user.username}`,
+      createdAt: now(),
+      createdBy: admin.username,
+      sourceUserIds: [user.id],
+    };
+  }
+  user.banIp = normalized;
+  return true;
+}
+
+function removeIpBanForAccount(user) {
+  const ip = normalizeIp(user.banIp || user.lastIp);
+  if (!ip || !data.ipBans[ip]) {
+    delete user.banIp;
+    return false;
+  }
+  const existing = data.ipBans[ip];
+  const sourceUserIds = new Set(Array.isArray(existing.sourceUserIds) ? existing.sourceUserIds : []);
+  sourceUserIds.delete(user.id);
+  if (sourceUserIds.size) {
+    existing.sourceUserIds = [...sourceUserIds];
+  } else if (Array.isArray(existing.sourceUserIds) && existing.sourceUserIds.length) {
+    delete data.ipBans[ip];
+  }
+  delete user.banIp;
+  return true;
+}
+
+function ipBanFor(ip) {
+  const normalized = normalizeIp(ip);
+  return normalized && data.ipBans ? data.ipBans[normalized] || null : null;
+}
+
+function touchUserIp(user, req) {
+  const ip = clientIp(req);
+  if (!ip || ip === "local" || user.lastIp === ip) return false;
+  user.lastIp = ip;
+  user.lastIpAt = now();
+  return true;
+}
+
 function logAdminAction(admin, type, details = {}) {
   data.adminLog.push({
     id: newId("al"),
@@ -362,6 +521,15 @@ function parseCookies(req) {
   return cookies;
 }
 
+function bannedSession(req) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token || token.length < 20) return null;
+  const session = data.sessions[hashToken(token)];
+  if (!session || session.expiresAt <= now()) return null;
+  const user = data.users[session.userId];
+  return user && user.banned ? user : null;
+}
+
 function currentSession(req) {
   const token = parseCookies(req)[SESSION_COOKIE];
   if (!token || token.length < 20) return null;
@@ -380,6 +548,7 @@ function currentSession(req) {
   if (now() - (session.lastSeen || 0) > 60 * 1000) {
     session.lastSeen = now();
   }
+  if (!user.banned && touchUserIp(user, req)) saveData();
   return { key, session, user };
 }
 
@@ -392,12 +561,13 @@ function requireUser(req) {
 function createSession(res, user, req) {
   const token = crypto.randomBytes(32).toString("base64url");
   const key = hashToken(token);
+  touchUserIp(user, req);
   const session = {
     userId: user.id,
     createdAt: now(),
     lastSeen: now(),
     expiresAt: now() + SESSION_TTL,
-    ip: req.socket.remoteAddress || "",
+    ip: clientIp(req),
   };
   data.sessions[key] = session;
   const secure = req.headers["x-forwarded-proto"] === "https" || req.socket.encrypted ? "; Secure" : "";
@@ -484,11 +654,13 @@ function onlineCount() {
 }
 
 function leaderboardPlayers(sort) {
-  const players = Object.values(data.users).map((user) => {
-    const row = publicUser(user);
-    row.net = Math.round((row.won - row.wagered) * 100) / 100;
-    return row;
-  });
+  const players = Object.values(data.users)
+    .filter((user) => !user.banned)
+    .map((user) => {
+      const row = publicUser(user);
+      row.net = Math.round((row.won - row.wagered) * 100) / 100;
+      return row;
+    });
   const sorters = {
     balance: (a, b) => b.balance - a.balance || b.wagered - a.wagered,
     wagered: (a, b) => b.wagered - a.wagered || b.balance - a.balance,
@@ -519,11 +691,21 @@ function rateLimit(map, key, max, windowMs) {
 }
 
 function clientIp(req) {
-  return (
-    String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  // Render puts the real client address first in X-Forwarded-For. Use the
+  // first valid value; later values are Cloudflare/Render proxy addresses.
+  const forwardedIp = forwarded
+    .map((part) => normalizeIp(part))
+    .find((ip) => net.isIP(ip));
+  const raw =
+    forwardedIp ||
+    normalizeIp(req.headers["x-real-ip"]) ||
     req.socket.remoteAddress ||
-    "local"
-  );
+    "local";
+  return normalizeIp(raw) || "local";
 }
 
 function readJson(req) {
@@ -578,6 +760,69 @@ function sendText(res, status, text) {
     "X-Content-Type-Options": "nosniff",
   });
   res.end(body);
+}
+
+function sendHtml(res, status, html) {
+  const body = Buffer.from(String(html));
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Length": body.length,
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+  });
+  res.end(body);
+}
+
+function blockedPage(title, message) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title} — WagerX</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #07070c;
+      color: #f4f4f8;
+      font-family: Inter, system-ui, -apple-system, sans-serif;
+    }
+    main {
+      width: min(440px, 100%);
+      padding: 28px;
+      border: 1px solid #242433;
+      border-radius: 16px;
+      background: #0d0d14;
+      text-align: center;
+    }
+    h1 { margin: 0 0 10px; font-size: 22px; }
+    p { margin: 0; color: #9494a8; font-size: 14px; line-height: 1.6; }
+    p + p { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${title}</h1>
+    <p>${message}</p>
+    <p>If you think this is a mistake, contact the site owner.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function bannedPage() {
+  return blockedPage("Access blocked", "This network has been blocked from WagerX.");
+}
+
+function accountBannedPage() {
+  return blockedPage("Account banned", "This account has been banned from WagerX.");
 }
 
 async function handleApi(req, res, url) {
@@ -648,6 +893,9 @@ async function handleApi(req, res, url) {
     if (!passwordMatches(password, user)) {
       throw new ApiError(401, "Wrong password. Try again.", "WRONG_PASSWORD");
     }
+    if (user.banned) {
+      throw new ApiError(403, "This account has been banned from WagerX.", "ACCOUNT_BANNED");
+    }
     createSession(res, user, req);
     saveData();
     return sendJson(res, 200, { user: selfUser(user) });
@@ -712,12 +960,13 @@ async function handleApi(req, res, url) {
       .filter((user) => !query || String(user.usernameLower || user.username || "").toLowerCase().includes(query))
       .sort((a, b) => Number(b.balance) - Number(a.balance) || String(a.username).localeCompare(String(b.username)))
       .slice(0, 50)
-      .map((user) => ({ ...publicUser(user), admin: isAdmin(user) }));
+      .map((user) => adminUserView(user));
     return sendJson(res, 200, {
       users,
       total: Object.keys(data.users).length,
       announcement: publicAnnouncement(data.announcement),
       log: data.adminLog.slice(-25).reverse(),
+      bannedUsers: publicBannedUsers(),
     });
   }
 
@@ -758,7 +1007,7 @@ async function handleApi(req, res, url) {
     });
     saveData();
     return sendJson(res, 200, {
-      user: publicUser(target),
+      user: adminUserView(target),
       amount,
       note,
       announcement: publicAnnouncement(data.announcement),
@@ -793,6 +1042,76 @@ async function handleApi(req, res, url) {
     logAdminAction(admin, "announcement-clear");
     saveData();
     return sendJson(res, 200, { announcement: null });
+  }
+
+  if (method === "POST" && pathname === "/api/admin/ban") {
+    const { user: admin } = requireAdmin(req);
+    if (!rateLimit(adminAttempts, admin.id, 30, 60 * 1000)) {
+      throw new ApiError(429, "Slow down. Wait a minute and try again.");
+    }
+    const body = await readJson(req);
+    const targetId = String(body.userId || "").trim();
+    const target = data.users[targetId] || findUserByName(body.username);
+    if (!target) throw new ApiError(404, "That player was not found.");
+    if (isAdmin(target)) {
+      throw new ApiError(400, "Admin accounts can't be banned.", "ADMIN_PROTECTED");
+    }
+    if (target.banned) {
+      throw new ApiError(409, "That account is already banned.", "ACCOUNT_ALREADY_BANNED");
+    }
+    const reason = String(body.reason || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    target.banned = true;
+    target.bannedAt = now();
+    target.bannedBy = admin.username;
+    target.banReason = reason;
+    const targetIp = userIpForBan(target);
+    const adminIp = clientIp(req);
+    if (targetIp && targetIp !== adminIp) {
+      addIpBanForAccount(target, targetIp, admin);
+    }
+    for (const [key, session] of Object.entries(data.sessions)) {
+      if (session.userId === target.id) delete data.sessions[key];
+    }
+    logAdminAction(admin, "account-ban", {
+      targetId: target.id,
+      targetUsername: target.username,
+      reason,
+    });
+    saveData();
+    return sendJson(res, 200, {
+      user: adminUserView(target),
+      bannedUsers: publicBannedUsers(),
+    });
+  }
+
+  if (method === "DELETE" && pathname === "/api/admin/ban") {
+    const { user: admin } = requireAdmin(req);
+    if (!rateLimit(adminAttempts, admin.id, 30, 60 * 1000)) {
+      throw new ApiError(429, "Slow down. Wait a minute and try again.");
+    }
+    const targetId = String(url.searchParams.get("userId") || "").trim();
+    const target = data.users[targetId] || findUserByName(url.searchParams.get("username"));
+    if (!target) throw new ApiError(404, "That player was not found.");
+    if (!target.banned) {
+      throw new ApiError(409, "That account is not banned.", "ACCOUNT_NOT_BANNED");
+    }
+    target.banned = false;
+    delete target.bannedAt;
+    delete target.bannedBy;
+    delete target.banReason;
+    removeIpBanForAccount(target);
+    logAdminAction(admin, "account-unban", {
+      targetId: target.id,
+      targetUsername: target.username,
+    });
+    saveData();
+    return sendJson(res, 200, {
+      user: adminUserView(target),
+      bannedUsers: publicBannedUsers(),
+    });
   }
 
   if (method === "GET" && pathname === "/api/chat") {
@@ -899,6 +1218,25 @@ function serveStatic(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
+    if (ipBanFor(clientIp(req))) {
+      if (url.pathname.startsWith("/api/")) {
+        return sendJson(res, 403, {
+          error: "This network is blocked from WagerX.",
+          code: "IP_BANNED",
+        });
+      }
+      return sendHtml(res, 403, bannedPage());
+    }
+    if (bannedSession(req) && !url.pathname.startsWith("/api/auth/")) {
+      clearSession(req, res);
+      if (url.pathname.startsWith("/api/")) {
+        return sendJson(res, 403, {
+          error: "This account has been banned from WagerX.",
+          code: "ACCOUNT_BANNED",
+        });
+      }
+      return sendHtml(res, 403, accountBannedPage());
+    }
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
       return;

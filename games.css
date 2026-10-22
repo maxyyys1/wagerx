@@ -1722,7 +1722,7 @@ input[type="range"]::-moz-range-thumb {
 
 /* admin panel */
 
-.admin-tabs { display: flex; gap: 5px; margin-bottom: 14px; }
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
 .admin-tab {
   height: 30px;
   padding: 0 12px;
@@ -1793,6 +1793,7 @@ input[type="range"]::-moz-range-thumb {
   vertical-align: 1px;
 }
 .admin-user-pick { flex: none; color: var(--lime); font-size: 7.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.admin-tag--banned { background: rgba(255, 77, 94, 0.14); color: #ff7b88; }
 .admin-grant { padding: 11px; border: 1px solid var(--line); border-radius: 10px; background: #0b0b12; }
 .admin-target { margin-bottom: 8px; color: var(--dim); font-size: 10px; }
 .admin-target b { color: var(--lime); }
@@ -1812,6 +1813,36 @@ input[type="range"]::-moz-range-thumb {
 .admin-quick button:hover { color: var(--lime); border-color: rgba(200, 255, 61, 0.3); }
 .admin-grant > .btn { width: 100%; height: 36px; font-size: 10.5px; }
 .admin-grant > .btn:disabled { background: #1c1c26; color: #5e5e72; cursor: not-allowed; box-shadow: none; }
+.admin-danger {
+  margin-top: 11px;
+  padding: 10px;
+  border: 1px solid rgba(255, 77, 94, 0.24);
+  border-radius: 9px;
+  background: rgba(255, 77, 94, 0.05);
+}
+.admin-danger-copy strong {
+  display: block;
+  color: #ff8b96;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.admin-danger-copy span {
+  display: block;
+  margin-top: 3px;
+  color: var(--dim);
+  font-size: 9.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.admin-danger-copy b { color: #f0f0f6; }
+.admin-danger-row { display: flex; gap: 7px; margin-top: 8px; }
+.admin-danger-row .input-line { flex: 1; min-width: 0; }
+.admin-danger-row .btn { flex: none; height: 36px; padding: 0 12px; font-size: 9px; }
+.admin-danger-btn { background: #ff4d5e; color: #fff; }
+.admin-danger-btn:hover { background: #ff6574; }
+.admin-danger-btn:disabled { background: #2a1b20; color: #79505a; cursor: not-allowed; box-shadow: none; }
 .admin-textarea {
   width: 100%;
   min-height: 110px;
@@ -1845,6 +1876,22 @@ input[type="range"]::-moz-range-thumb {
 .admin-current-head span { color: var(--dim); font-size: 8px; }
 .admin-current p { color: #d8d8e3; overflow-wrap: anywhere; }
 .admin-current-empty { color: var(--dim); font-size: 9.5px; }
+.admin-ban-note { margin: 0 0 9px; color: var(--dim); font-size: 9px; line-height: 1.45; }
+.admin-bans { max-height: 240px; overflow-y: auto; padding-right: 2px; }
+.admin-bans h4 { margin-bottom: 5px; color: var(--dim); font-size: 8px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
+.admin-ban-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.admin-ban-row:last-child { border-bottom: 0; }
+.admin-ban-copy { flex: 1; min-width: 0; }
+.admin-ban-copy strong { display: block; color: #f4f4f8; font-size: 10px; overflow-wrap: anywhere; }
+.admin-ban-copy span { display: block; margin-top: 2px; color: var(--dim); font-size: 8.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.admin-unban { flex: none; height: 28px; padding: 0 8px; font-size: 8px; }
 .admin-log { margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--line); }
 .admin-log h4 { margin-bottom: 6px; color: var(--dim); font-size: 8px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
 .admin-log-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 9px; line-height: 1.4; }
@@ -1858,6 +1905,10 @@ input[type="range"]::-moz-range-thumb {
   .admin-grant-row { flex-direction: column; }
   .admin-actions { flex-direction: column; }
   .admin-actions .btn { width: 100%; }
+  .admin-danger-row { flex-direction: column; }
+  .admin-danger-row .btn { width: 100%; }
+  .admin-ban-row { align-items: stretch; flex-direction: column; }
+  .admin-unban { width: 100%; }
 }
 
 /* leaderboard */

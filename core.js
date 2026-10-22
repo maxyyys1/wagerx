@@ -1581,7 +1581,7 @@
         ${
           state.account && state.account.admin
             ? `<div class="account-row">
-                 <div class="account-row-copy"><strong>Admin panel</strong><span>Give cash and post site announcements</span></div>
+                 <div class="account-row-copy"><strong>Admin panel</strong><span>Give cash, post announcements, and ban accounts</span></div>
                  <button class="btn btn-lime" type="button" data-open="admin" style="height:30px;font-size:9.5px">Open</button>
                </div>`
             : ""
@@ -1752,6 +1752,15 @@
       text = `<b>@${esc(entry.adminUsername || "admin")}</b> published an announcement`;
     } else if (entry.type === "announcement-clear") {
       text = `<b>@${esc(entry.adminUsername || "admin")}</b> cleared the announcement`;
+    } else if (entry.type === "account-ban") {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> banned <b>@${esc(entry.targetUsername || "player")}</b>`;
+      if (entry.reason) text += ` · ${esc(entry.reason)}`;
+    } else if (entry.type === "account-unban") {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> unbanned <b>@${esc(entry.targetUsername || "player")}</b>`;
+    } else if (entry.type === "ip-ban" || entry.type === "ip-unban") {
+      text = `<b>@${esc(entry.adminUsername || "admin")}</b> ${
+        entry.type === "ip-ban" ? "blocked a network" : "unblocked a network"
+      }`;
     } else {
       text = `<b>@${esc(entry.adminUsername || "admin")}</b> updated the floor`;
     }
@@ -1781,11 +1790,12 @@
       size: "wide",
       body: `
         <div class="admin-tabs" id="adminTabs">
-          <button class="admin-tab is-active" type="button" data-admin-tab="grant">Give cash</button>
+          <button class="admin-tab is-active" type="button" data-admin-tab="players">Players</button>
           <button class="admin-tab" type="button" data-admin-tab="announce">Announcement</button>
+          <button class="admin-tab" type="button" data-admin-tab="bans">Bans</button>
         </div>
 
-        <section data-admin-panel="grant">
+        <section data-admin-panel="players">
           <div class="admin-search">
             <input class="input-line" id="adminSearch" type="search" maxlength="18" placeholder="Search username…" autocomplete="off" />
             <button class="btn btn-outline" type="button" id="adminSearchBtn">Search</button>
@@ -1804,6 +1814,16 @@
               <button type="button" data-admin-amount="25000">$25,000</button>
             </div>
             <button class="btn btn-lime" type="button" id="adminGrantBtn" disabled>Give cash</button>
+            <div class="admin-danger">
+              <div class="admin-danger-copy">
+                <strong>Account ban</strong>
+                <span id="adminBanText">Select a player above.</span>
+              </div>
+              <div class="admin-danger-row">
+                <input class="input-line" id="adminBanReason" type="text" maxlength="120" placeholder="Reason (optional)" disabled />
+                <button class="btn admin-danger-btn" type="button" id="adminBanAccountBtn" disabled>Ban account</button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -1814,6 +1834,11 @@
             <button class="btn btn-outline" type="button" id="adminClear" disabled>Remove current</button>
           </div>
           <div class="admin-current" id="adminCurrent"></div>
+        </section>
+
+        <section data-admin-panel="bans" hidden>
+          <p class="admin-ban-note">Banned accounts cannot sign in or play. Their current network is blocked too. Network details stay private.</p>
+          <div class="admin-bans" id="adminBans"><div class="admin-empty">Loading banned accounts…</div></div>
         </section>
 
         <div class="admin-log" id="adminLog"></div>
@@ -1833,13 +1858,50 @@
         const clearBtn = $("#adminClear", body);
         const announceInput = $("#adminAnnouncement", body);
         const logBox = $("#adminLog", body);
+        const banReasonInput = $("#adminBanReason", body);
+        const banAccountBtn = $("#adminBanAccountBtn", body);
+        const banText = $("#adminBanText", body);
+        const bansList = $("#adminBans", body);
 
         const setTarget = (user) => {
+          const previousId = selectedUser ? selectedUser.id : "";
           selectedUser = user;
+          if (!user || user.id !== previousId) banReasonInput.value = "";
           targetLabel.innerHTML = user
-            ? `Selected: <b>@${esc(user.username)}</b> · ${fmtMoney(user.balance)}`
+            ? `Selected: <b>@${esc(user.username)}</b> · ${fmtMoney(user.balance)}${
+                user.banned ? ' <i class="admin-tag admin-tag--banned">BANNED</i>' : ""
+              }`
             : "Pick a player above.";
-          grantBtn.disabled = !user;
+          grantBtn.disabled = !user || !!user.banned;
+          banReasonInput.disabled = !user || !!user.banned || !!user.admin;
+          banAccountBtn.disabled = !user || !!user.admin;
+          if (!user) {
+            banText.textContent = "Select a player above.";
+            banAccountBtn.textContent = "Ban account";
+            banAccountBtn.classList.add("admin-danger-btn");
+            banAccountBtn.classList.remove("btn-outline");
+            return;
+          }
+          if (user.admin) {
+            banText.textContent = "Admin accounts can't be banned.";
+            banAccountBtn.textContent = "Protected";
+            banAccountBtn.classList.add("admin-danger-btn");
+            banAccountBtn.classList.remove("btn-outline");
+            return;
+          }
+          if (user.banned) {
+            banText.innerHTML = `This account is banned${
+              user.banReason ? `: ${esc(user.banReason)}` : ""
+            }. Unbanning restores access.`;
+            banAccountBtn.textContent = "Unban account";
+            banAccountBtn.classList.remove("admin-danger-btn");
+            banAccountBtn.classList.add("btn-outline");
+            return;
+          }
+          banText.innerHTML = `Ban <b>@${esc(user.username)}</b>. Their current network is blocked too.`;
+          banAccountBtn.textContent = "Ban account";
+          banAccountBtn.classList.add("admin-danger-btn");
+          banAccountBtn.classList.remove("btn-outline");
         };
 
         const renderUsers = (users) => {
@@ -1852,8 +1914,14 @@
             .map(
               (user) => `<button class="admin-user${selectedUser && selectedUser.id === user.id ? " is-selected" : ""}" type="button" data-admin-user="${esc(user.id)}">
                 <span class="admin-avatar" style="background:${safeColor(user.color)}">${esc(String(user.username || "?").slice(0, 2).toUpperCase())}</span>
-                <span class="admin-user-copy"><strong>@${esc(user.username)}${user.admin ? ' <i class="admin-tag">ADMIN</i>' : ""}</strong><span>${fmtMoney(user.balance)} · Lv ${user.level || 1}</span></span>
-                <span class="admin-user-pick">Select</span>
+                <span class="admin-user-copy"><strong>@${esc(user.username)}${
+                  user.banned
+                    ? ' <i class="admin-tag admin-tag--banned">BANNED</i>'
+                    : user.admin
+                      ? ' <i class="admin-tag">ADMIN</i>'
+                      : ""
+                }</strong><span>${fmtMoney(user.balance)} · Lv ${user.level || 1}</span></span>
+                <span class="admin-user-pick">${user.banned ? "Banned" : "Select"}</span>
               </button>`
             )
             .join("");
@@ -1879,12 +1947,65 @@
           }`;
         };
 
+        const renderBans = (bannedUsers) => {
+          const list = Array.isArray(bannedUsers) ? bannedUsers : [];
+          if (!list.length) {
+            bansList.innerHTML = `<div class="admin-empty">No accounts are banned.</div>`;
+            return;
+          }
+          bansList.innerHTML = `<h4>Banned accounts (${list.length})</h4>${list
+            .map(
+              (ban) => `<div class="admin-ban-row">
+                <div class="admin-ban-copy">
+                  <strong>@${esc(ban.username || "unknown")}</strong>
+                  <span>${esc(ban.banReason || "No reason given.")} · ${esc(formatAdminTime(ban.bannedAt))}${
+                    ban.bannedBy ? ` · by @${esc(ban.bannedBy)}` : ""
+                  }</span>
+                </div>
+                <button class="btn btn-outline admin-unban" type="button" data-admin-unban-user="${esc(ban.id || "")}">Unban</button>
+              </div>`
+            )
+            .join("")}`;
+          bansList.querySelectorAll("[data-admin-unban-user]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const userId = btn.dataset.adminUnbanUser;
+              if (!userId || busy) return;
+              busy = true;
+              btn.disabled = true;
+              btn.textContent = "Unbanning…";
+              try {
+                const data = await socialApi(`/admin/ban?userId=${encodeURIComponent(userId)}`, { method: "DELETE" });
+                renderBans(data.bannedUsers);
+                toast(
+                  "Account unbanned",
+                  `@${data.user && data.user.username ? data.user.username : "Player"} can sign in again.`,
+                  "success",
+                  5000
+                );
+                await load(searchInput.value.trim());
+              } catch (err) {
+                if (err.status === 401) handleSessionExpired();
+                else toast("Could not unban", err.message || "Try again.", "error", 5000);
+              } finally {
+                busy = false;
+                btn.disabled = false;
+                btn.textContent = "Unban";
+              }
+            });
+          });
+        };
+
         const load = async (query = "") => {
           userList.innerHTML = `<div class="admin-empty">Loading players…</div>`;
           try {
             const data = await socialApi(`/admin/users?q=${encodeURIComponent(query)}`);
-            renderUsers(Array.isArray(data.users) ? data.users : []);
+            const users = Array.isArray(data.users) ? data.users : [];
+            renderUsers(users);
+            const refreshed = selectedUser ? users.find((user) => user.id === selectedUser.id) : null;
+            if (refreshed) setTarget(refreshed);
+            else if (selectedUser) setTarget(null);
             renderLog(data.log);
+            renderBans(data.bannedUsers);
             renderAdminAnnouncement(body, data.announcement || null);
             announcementLive = !!data.announcement;
             clearBtn.disabled = !announcementLive;
@@ -1902,6 +2023,7 @@
                   : err.message || "Could not load the admin panel.";
             userList.innerHTML = `<div class="admin-empty">${esc(message)}</div>`;
             logBox.innerHTML = "";
+            bansList.innerHTML = `<div class="admin-empty">${esc(message)}</div>`;
           }
         };
 
@@ -1969,7 +2091,7 @@
             else toast("Could not send cash", err.message || "Try again.", "error", 5000);
           } finally {
             busy = false;
-            grantBtn.disabled = !selectedUser;
+            grantBtn.disabled = !selectedUser || !!selectedUser.banned;
             grantBtn.textContent = "Give cash";
           }
         });
@@ -2024,6 +2146,75 @@
             busy = false;
             clearBtn.disabled = !announcementLive;
             clearBtn.textContent = "Remove current";
+          }
+        });
+
+        banAccountBtn.addEventListener("click", async () => {
+          if (!selectedUser || busy) return;
+          const target = selectedUser;
+          if (target.admin) {
+            toast("Admin protected", "Admin accounts can't be banned.", "error", 5000);
+            return;
+          }
+          if (target.banned) {
+            busy = true;
+            banAccountBtn.disabled = true;
+            banAccountBtn.textContent = "Unbanning…";
+            try {
+              const data = await socialApi(`/admin/ban?userId=${encodeURIComponent(target.id)}`, {
+                method: "DELETE",
+              });
+              selectedUser = data.user || target;
+              setTarget(selectedUser);
+              renderBans(data.bannedUsers);
+              toast("Account unbanned", `@${target.username} can sign in again.`, "success", 5000);
+              await load(searchInput.value.trim());
+            } catch (err) {
+              if (err.status === 401) handleSessionExpired();
+              else toast("Could not unban", err.message || "Try again.", "error", 5000);
+            } finally {
+              busy = false;
+              if (selectedUser) setTarget(selectedUser);
+              else {
+                banAccountBtn.disabled = true;
+                banAccountBtn.textContent = "Ban account";
+              }
+            }
+            return;
+          }
+          const reason = banReasonInput.value.trim();
+          if (!window.confirm(`Ban @${target.username}? This also blocks the network they are using.`)) return;
+          busy = true;
+          banAccountBtn.disabled = true;
+          banAccountBtn.textContent = "Banning…";
+          try {
+            const data = await socialApi("/admin/ban", {
+              method: "POST",
+              body: { userId: target.id, reason },
+            });
+            selectedUser = data.user || target;
+            banReasonInput.value = "";
+            setTarget(selectedUser);
+            renderBans(data.bannedUsers);
+            setTab("bans");
+            toast("Account banned", `@${target.username} can no longer sign in.`, "success", 6000);
+            await load(searchInput.value.trim());
+          } catch (err) {
+            if (err.status === 401) handleSessionExpired();
+            else toast("Could not ban account", err.message || "Try again.", "error", 5000);
+          } finally {
+            busy = false;
+            if (selectedUser) setTarget(selectedUser);
+            else {
+              banAccountBtn.disabled = true;
+              banAccountBtn.textContent = "Ban account";
+            }
+          }
+        });
+        banReasonInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            banAccountBtn.click();
           }
         });
 
